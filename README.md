@@ -47,7 +47,7 @@ the browser**.
 1. In Netlify, go to **Site configuration → Environment variables**
 2. Click **Add a variable**
 3. Key: `SPORTSDB_KEY`
-4. Value: `654760`  ← your TheSportsDB Patreon key
+4. Value: ``  ← your TheSportsDB Patreon key
 5. Click **Save**
 6. Go to **Deploys → Trigger deploy → Deploy site**
 
