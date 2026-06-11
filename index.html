@@ -263,24 +263,30 @@ async function getSquad(teamId) {
 async function getPlayer(playerId) {
   return proxyGet('lookupplayer.php', { id: playerId });     // → v1
 }
-async function searchTeam(name) {
-  return proxyGet('searchteams.php', { t: name });           // → v1
+async function lookupTeam(teamId) {
+  return proxyGet('lookupteam.php', { id: teamId });         // → v1
 }
 
-// Fetches and caches a club's badge URL by team name.
-// Returns { badge: url|null, name: string }
-async function getClubInfo(clubName) {
-  if (!clubName) return { badge: null, name: '' };
-  if (S.clubCache[clubName] !== undefined) return S.clubCache[clubName];
+// Fetches and caches a club's badge by idTeam (reliable direct lookup).
+// Falls back to name-only if no idTeam. Returns { badge, name }
+async function getClubInfo(idTeam, fallbackName) {
+  const cacheKey = idTeam || ('name:' + fallbackName);
+  if (S.clubCache[cacheKey] !== undefined) return S.clubCache[cacheKey];
+  if (!idTeam) {
+    const info = { badge: null, name: fallbackName || '' };
+    S.clubCache[cacheKey] = info;
+    return info;
+  }
   try {
-    const d = await searchTeam(clubName);
+    const d    = await lookupTeam(idTeam);
     const team = d.teams?.[0];
-    const info = { badge: team?.strTeamBadge || null, name: team?.strTeam || clubName };
-    S.clubCache[clubName] = info;
+    const info = { badge: team?.strTeamBadge || null, name: team?.strTeam || fallbackName || '' };
+    S.clubCache[cacheKey] = info;
     return info;
   } catch {
-    S.clubCache[clubName] = { badge: null, name: clubName };
-    return S.clubCache[clubName];
+    const info = { badge: null, name: fallbackName || '' };
+    S.clubCache[cacheKey] = info;
+    return info;
   }
 }
 
@@ -405,10 +411,13 @@ async function openMatch(i) {
     if (!S.squads[hId]) { const d = await getSquad(hId); S.squads[hId] = d.player || []; }
     if (!S.squads[aId]) { const d = await getSquad(aId); S.squads[aId] = d.player || []; }
 
-    // Pre-fetch club badges for all players (deduplicated)
+    // Pre-fetch club badges for all players using idTeam (direct lookup, reliable)
     const allPlayers = [...(S.squads[hId] || []), ...(S.squads[aId] || [])];
-    const clubNames  = [...new Set(allPlayers.map(p => p.strTeam || p.strClub).filter(Boolean))];
-    await Promise.allSettled(clubNames.map(name => getClubInfo(name)));
+    const seen = new Set();
+    const clubFetches = allPlayers
+      .filter(p => { const k = p.idTeam || ('name:' + (p.strTeam||p.strClub)); if (seen.has(k)) return false; seen.add(k); return true; })
+      .map(p => getClubInfo(p.idTeam, p.strTeam || p.strClub));
+    await Promise.allSettled(clubFetches);
 
     render();
   } catch(e) {
@@ -452,7 +461,8 @@ function renderSquad() {
   } else {
     h += squad.map(p => {
       const clubName = p.strTeam || p.strClub || '';
-      const clubInfo = S.clubCache[clubName] || { badge: null, name: clubName };
+      const cacheKey = p.idTeam || ('name:' + clubName);
+      const clubInfo = S.clubCache[cacheKey] || { badge: null, name: clubName };
       const clubRow  = clubName
         ? `<div class="p-club-row">
              ${clubInfo.badge ? `<img class="p-club-badge" src="${esc(clubInfo.badge)}" alt="" onerror="this.remove()">` : ''}
@@ -481,9 +491,9 @@ async function openPlayer(pid) {
     const d = await getPlayer(pid);
     S.player = d.players?.[0] || null;
     if (!S.player) throw new Error('No player data returned');
-    // Fetch club badge (may already be cached)
+    // Fetch club badge using idTeam (may already be cached from squad view)
     const clubName = S.player.strTeam || S.player.strClub;
-    if (clubName) await getClubInfo(clubName);
+    if (S.player.idTeam || clubName) await getClubInfo(S.player.idTeam, clubName);
     S.view = 'player';
     render();
   } catch(e) {
@@ -494,7 +504,8 @@ async function openPlayer(pid) {
 function renderPlayer() {
   const p        = S.player;
   const clubName = p.strTeam || p.strClub || null;
-  const clubInfo = clubName ? (S.clubCache[clubName] || { badge: null, name: clubName }) : null;
+  const cacheKey = p.idTeam || ('name:' + clubName);
+  const clubInfo = clubName ? (S.clubCache[cacheKey] || { badge: null, name: clubName }) : null;
   const stats = [
     ['Nationality', p.strNationality],
     ['Date of birth', p.dateBorn ? fmtDate(p.dateBorn) : null],
