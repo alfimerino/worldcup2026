@@ -131,8 +131,12 @@ button:disabled { opacity: 0.45; cursor: wait; }
 }
 .player:hover { border-color: var(--accent); transform: translateX(2px); }
 .p-num { font-family: var(--mono); font-size: 13px; font-weight: 700; color: var(--gold); min-width: 26px; text-align: center; }
-.p-name { flex: 1; font-size: 14px; font-weight: 500; }
-.p-pos { font-size: 11px; color: var(--chalk-faint); text-transform: uppercase; letter-spacing: 0.08em; }
+.p-info { flex: 1; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.p-name { font-size: 14px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.p-club-row { display: flex; align-items: center; gap: 6px; }
+.p-club-badge { width: 16px; height: 16px; object-fit: contain; flex-shrink: 0; }
+.p-club-name { font-size: 11px; color: var(--chalk-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.p-pos { font-size: 11px; color: var(--chalk-faint); text-transform: uppercase; letter-spacing: 0.08em; flex-shrink: 0; }
 
 /* Player detail */
 .pcard { background: var(--card); border: 1px solid var(--line); border-radius: var(--r); padding: 22px; }
@@ -152,7 +156,8 @@ button:disabled { opacity: 0.45; cursor: wait; }
   background: rgba(232,181,66,0.08); border: 1px solid rgba(232,181,66,0.4);
   border-radius: 10px; padding: 14px 16px; margin-bottom: 16px;
 }
-.club-icon { font-size: 28px; line-height: 1; }
+.club-badge { width: 52px; height: 52px; object-fit: contain; flex-shrink: 0; }
+.club-badge-placeholder { width: 52px; height: 52px; display: flex; align-items: center; justify-content: center; font-size: 28px; flex-shrink: 0; }
 .club-label { font-size: 10px; font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase; color: var(--gold); }
 .club-name  { font-size: 20px; font-weight: 700; margin-top: 3px; }
 .club-none  { color: var(--chalk-faint); font-style: italic; }
@@ -230,6 +235,7 @@ let S = {
   view: 'matches', filter: 'wc',
   all: [], wc: [],
   squads: {},
+  clubCache: {},   // clubName → { badge, name }
   match: null, tab: null, player: null
 };
 
@@ -256,6 +262,26 @@ async function getSquad(teamId) {
 }
 async function getPlayer(playerId) {
   return proxyGet('lookupplayer.php', { id: playerId });     // → v1
+}
+async function searchTeam(name) {
+  return proxyGet('searchteams.php', { t: name });           // → v1
+}
+
+// Fetches and caches a club's badge URL by team name.
+// Returns { badge: url|null, name: string }
+async function getClubInfo(clubName) {
+  if (!clubName) return { badge: null, name: '' };
+  if (S.clubCache[clubName] !== undefined) return S.clubCache[clubName];
+  try {
+    const d = await searchTeam(clubName);
+    const team = d.teams?.[0];
+    const info = { badge: team?.strTeamBadge || null, name: team?.strTeam || clubName };
+    S.clubCache[clubName] = info;
+    return info;
+  } catch {
+    S.clubCache[clubName] = { badge: null, name: clubName };
+    return S.clubCache[clubName];
+  }
 }
 
 /* ── Helpers ── */
@@ -378,6 +404,12 @@ async function openMatch(i) {
     const hId = S.match.idHomeTeam, aId = S.match.idAwayTeam;
     if (!S.squads[hId]) { const d = await getSquad(hId); S.squads[hId] = d.player || []; }
     if (!S.squads[aId]) { const d = await getSquad(aId); S.squads[aId] = d.player || []; }
+
+    // Pre-fetch club badges for all players (deduplicated)
+    const allPlayers = [...(S.squads[hId] || []), ...(S.squads[aId] || [])];
+    const clubNames  = [...new Set(allPlayers.map(p => p.strTeam || p.strClub).filter(Boolean))];
+    await Promise.allSettled(clubNames.map(name => getClubInfo(name)));
+
     render();
   } catch(e) {
     el('main').innerHTML = `<div class="err">Couldn't load squads: ${esc(e.message)}</div>`;
@@ -418,13 +450,26 @@ function renderSquad() {
   if (!squad.length) {
     h += `<div class="empty">No squad data in TheSportsDB for this team yet.</div>`;
   } else {
-    h += squad.map(p => `
-    <div class="player" onclick="openPlayer('${esc(p.idPlayer)}')" role="button" tabindex="0"
-         onkeydown="if(event.key==='Enter')openPlayer('${esc(p.idPlayer)}')">
-      <span class="p-num">${esc(p.strNumber || '·')}</span>
-      <span class="p-name">${esc(p.strPlayer)}</span>
-      <span class="p-pos">${esc(p.strPosition || '')}</span>
-    </div>`).join('');
+    h += squad.map(p => {
+      const clubName = p.strTeam || p.strClub || '';
+      const clubInfo = S.clubCache[clubName] || { badge: null, name: clubName };
+      const clubRow  = clubName
+        ? `<div class="p-club-row">
+             ${clubInfo.badge ? `<img class="p-club-badge" src="${esc(clubInfo.badge)}" alt="" onerror="this.remove()">` : ''}
+             <span class="p-club-name">${esc(clubInfo.name || clubName)}</span>
+           </div>`
+        : '';
+      return `
+      <div class="player" onclick="openPlayer('${esc(p.idPlayer)}')" role="button" tabindex="0"
+           onkeydown="if(event.key==='Enter')openPlayer('${esc(p.idPlayer)}')">
+        <span class="p-num">${esc(p.strNumber || '·')}</span>
+        <div class="p-info">
+          <span class="p-name">${esc(p.strPlayer)}</span>
+          ${clubRow}
+        </div>
+        <span class="p-pos">${esc(p.strPosition || '')}</span>
+      </div>`;
+    }).join('');
   }
   el('main').innerHTML = h;
 }
@@ -436,6 +481,9 @@ async function openPlayer(pid) {
     const d = await getPlayer(pid);
     S.player = d.players?.[0] || null;
     if (!S.player) throw new Error('No player data returned');
+    // Fetch club badge (may already be cached)
+    const clubName = S.player.strTeam || S.player.strClub;
+    if (clubName) await getClubInfo(clubName);
     S.view = 'player';
     render();
   } catch(e) {
@@ -444,8 +492,9 @@ async function openPlayer(pid) {
 }
 
 function renderPlayer() {
-  const p    = S.player;
-  const club = p.strTeam || p.strClub || null;
+  const p        = S.player;
+  const clubName = p.strTeam || p.strClub || null;
+  const clubInfo = clubName ? (S.clubCache[clubName] || { badge: null, name: clubName }) : null;
   const stats = [
     ['Nationality', p.strNationality],
     ['Date of birth', p.dateBorn ? fmtDate(p.dateBorn) : null],
@@ -468,10 +517,12 @@ function renderPlayer() {
     </div>
 
     <div class="club-box">
-      <span class="club-icon">🏟️</span>
+      ${clubInfo?.badge
+        ? `<img class="club-badge" src="${esc(clubInfo.badge)}" alt="${esc(clubInfo.name)}" onerror="this.outerHTML='<div class=club-badge-placeholder>🏟️</div>'">`
+        : `<div class="club-badge-placeholder">🏟️</div>`}
       <div>
         <div class="club-label">Plays for</div>
-        <div class="club-name ${club ? '' : 'club-none'}">${esc(club || 'Club not listed')}</div>
+        <div class="club-name ${clubName ? '' : 'club-none'}">${esc(clubInfo?.name || clubName || 'Club not listed')}</div>
       </div>
     </div>
 
