@@ -280,10 +280,14 @@ async function getClubInfo(idTeam, fallbackName) {
   try {
     const d    = await lookupTeam(idTeam);
     const team = d.teams?.[0];
-    const info = { badge: team?.strTeamBadge || null, name: team?.strTeam || fallbackName || '' };
+    // Log what comes back so we can see the badge field name
+    if (team) console.log('TEAM FIELDS for', idTeam, ':', Object.keys(team).filter(k => k.toLowerCase().includes('badge') || k.toLowerCase().includes('logo') || k.toLowerCase().includes('thumb')), '→', team.strTeamBadge || team.strBadge || team.strLogo || '(none)');
+    const badge = team?.strTeamBadge || team?.strBadge || team?.strLogo || null;
+    const info  = { badge, name: team?.strTeam || fallbackName || '' };
     S.clubCache[cacheKey] = info;
     return info;
-  } catch {
+  } catch(e) {
+    console.warn('getClubInfo failed for idTeam', idTeam, e.message);
     const info = { badge: null, name: fallbackName || '' };
     S.clubCache[cacheKey] = info;
     return info;
@@ -410,6 +414,10 @@ async function openMatch(i) {
     const hId = S.match.idHomeTeam, aId = S.match.idAwayTeam;
     if (!S.squads[hId]) { const d = await getSquad(hId); S.squads[hId] = d.player || []; }
     if (!S.squads[aId]) { const d = await getSquad(aId); S.squads[aId] = d.player || []; }
+
+    // Log first player so we can see all available fields in browser console
+    const firstPlayer = (S.squads[hId] || [])[0];
+    if (firstPlayer) console.log('PLAYER FIELDS:', JSON.stringify(firstPlayer, null, 2));
 
     // Pre-fetch club badges for all players using idTeam (direct lookup, reliable)
     const allPlayers = [...(S.squads[hId] || []), ...(S.squads[aId] || [])];
