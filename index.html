@@ -54,15 +54,11 @@ button:active { transform: scale(0.97); }
 button:disabled { opacity: 0.45; cursor: wait; }
 .updated { font-size: 12px; color: var(--chalk-faint); font-family: var(--mono); }
 
-/* Filter tabs */
-.tabs { display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap; }
-.tab {
-  padding: 7px 16px; border-radius: 999px; font-size: 13px; font-weight: 600;
-  border: 1px solid var(--line); color: var(--chalk-dim); cursor: pointer;
-  background: transparent; transition: all 0.13s;
+/* Day group label */
+.day-label {
+  font-size: 12px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--chalk-faint); margin: 22px 0 10px; padding-left: 2px;
 }
-.tab.active { background: var(--gold); color: #2b1f04; border-color: transparent; }
-.tab:hover:not(.active) { border-color: var(--chalk-faint); color: var(--chalk); }
 
 /* Breadcrumb */
 .bc { display: none; align-items: center; gap: 8px; font-size: 13px; color: var(--chalk-faint); margin-bottom: 18px; flex-wrap: wrap; }
@@ -206,7 +202,7 @@ footer { margin-top: 48px; font-size: 12px; color: var(--chalk-faint); text-alig
     <span class="updated" id="updated"></span>
   </div>
 
-  <nav class="bc" id="bc">
+  <div class="bc" id="bc">
     <span class="lnk" id="bcHome" onclick="goMatches()">← Matches</span>
     <span id="bcSep1" style="display:none;">/</span>
     <span id="bcMatch" class="lnk" onclick="goSquad()" style="display:none;"></span>
@@ -214,7 +210,6 @@ footer { margin-top: 48px; font-size: 12px; color: var(--chalk-faint); text-alig
     <span id="bcPlayer" style="display:none;"></span>
   </nav>
 
-  <div class="tabs" id="filterTabs" style="display:none;"></div>
   <main id="main">
     <div class="loading"><div class="spinner"></div>Connecting…</div>
   </main>
@@ -232,10 +227,10 @@ const WC_ID  = '4429';
 const PROXY  = '/.netlify/functions/scores';
 
 let S = {
-  view: 'matches', filter: 'wc',
-  all: [], wc: [],
+  view: 'matches',
+  matches: [],       // all WC matches for the week (live + scheduled)
   squads: {},
-  clubCache: {},   // clubName → { badge, name }
+  clubCache: {},
   match: null, tab: null, player: null
 };
 
@@ -255,16 +250,19 @@ async function proxyGet(endpoint, params = {}) {
 }
 
 async function getLivescores() {
-  return proxyGet('livescore/soccer');           // → v2
+  return proxyGet('livescore/soccer');                                      // v2 — today only
+}
+async function getSchedule() {
+  return proxyGet('eventsseason.php', { id: WC_ID, s: '2026' });           // v1 — full season
 }
 async function getSquad(teamId) {
-  return proxyGet('lookup_all_players.php', { id: teamId }); // → v1
+  return proxyGet('lookup_all_players.php', { id: teamId });
 }
 async function getPlayer(playerId) {
-  return proxyGet('lookupplayer.php', { id: playerId });     // → v1
+  return proxyGet('lookupplayer.php', { id: playerId });
 }
 async function lookupTeam(teamId) {
-  return proxyGet('lookupteam.php', { id: teamId });         // → v1
+  return proxyGet('lookupteam.php', { id: teamId });
 }
 
 // Fetches and caches a club's badge by idTeam (reliable direct lookup).
@@ -326,47 +324,32 @@ function goSquad()   { S.view='squad';   S.player=null; render(); }
 
 function renderBc() {
   const bc = el('bc');
-  if (S.view === 'matches') {
-    bc.classList.remove('show');
-    el('filterTabs').style.display = 'flex';
-    return;
-  }
-  el('filterTabs').style.display = 'none';
+  if (S.view === 'matches') { bc.classList.remove('show'); return; }
   bc.classList.add('show');
-
   const matchLabel = S.match ? `${S.match.strHomeTeam} vs ${S.match.strAwayTeam}` : '';
-
   if (S.view === 'squad') {
-    el('bcMatch').textContent  = matchLabel;
-    el('bcMatch').style.display  = 'inline';
-    el('bcMatch').onclick = null; // current page, not a link
+    el('bcMatch').textContent = matchLabel;
+    el('bcMatch').style.display = 'inline';
+    el('bcMatch').onclick = null;
     el('bcMatch').classList.remove('lnk');
-    el('bcSep1').style.display   = 'inline';
-    el('bcSep2').style.display   = 'none';
+    el('bcSep1').style.display = 'inline';
+    el('bcSep2').style.display = 'none';
     el('bcPlayer').style.display = 'none';
   } else {
-    el('bcMatch').textContent  = matchLabel;
-    el('bcMatch').style.display  = 'inline';
+    el('bcMatch').textContent = matchLabel;
+    el('bcMatch').style.display = 'inline';
     el('bcMatch').onclick = goSquad;
     el('bcMatch').classList.add('lnk');
-    el('bcSep1').style.display   = 'inline';
-    el('bcSep2').style.display   = 'inline';
-    el('bcPlayer').textContent   = S.player?.strPlayer || '';
+    el('bcSep1').style.display = 'inline';
+    el('bcSep2').style.display = 'inline';
+    el('bcPlayer').textContent = S.player?.strPlayer || '';
     el('bcPlayer').style.display = 'inline';
   }
 }
 
-function setFilter(f) { S.filter = f; render(); }
-
-function renderFilterTabs() {
-  el('filterTabs').innerHTML = `
-    <button class="tab ${S.filter==='wc' ?'active':''}" onclick="setFilter('wc')">🏆 World Cup (${S.wc.length})</button>
-    <button class="tab ${S.filter==='all'?'active':''}" onclick="setFilter('all')">All soccer (${S.all.length})</button>`;
-}
-
 /* ── Match list ── */
 function matchCard(m) {
-  const idx = S.all.indexOf(m);
+  const idx = S.matches.indexOf(m);
   const st  = statusOf(m);
   return `
   <div class="match" onclick="openMatch(${idx})" role="button" tabindex="0"
@@ -380,34 +363,56 @@ function matchCard(m) {
       <span class="m-score">${scoreOf(m)}</span>
       <span class="m-status s-${st}">${esc(statusLabel(m))}</span>
     </div>
-    <div class="m-meta">${esc(m.strLeague || '')} · ${fmtDate(m.dateEvent)}</div>
+    <div class="m-meta">${fmtTime(m.strTimestamp || m.strEventTime)}</div>
   </div>`;
 }
 
+function fmtTime(ts) {
+  if (!ts) return '';
+  // if it's a full ISO timestamp, extract local time
+  if (ts.includes('T')) {
+    return new Date(ts).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  }
+  return ts;
+}
+
 function renderMatches() {
-  renderFilterTabs();
-  const list = S.filter === 'wc' ? S.wc : S.all;
-  if (!list.length) {
-    el('main').innerHTML = `<div class="empty">${
-      S.filter === 'wc'
-        ? 'No World Cup matches in the feed right now.<br>Switch to <strong>All soccer</strong> or hit Refresh.'
-        : 'No live matches right now. Try again closer to kickoff.'
-    }</div>`;
+  if (!S.matches.length) {
+    el('main').innerHTML = `<div class="empty">No World Cup matches found. Hit Refresh.</div>`;
     return;
   }
-  const live = list.filter(m => statusOf(m) === 'live');
-  const soon = list.filter(m => statusOf(m) === 'ns');
-  const done = list.filter(m => statusOf(m) === 'ft');
+
+  // Group by date string YYYY-MM-DD
+  const groups = {};
+  for (const m of S.matches) {
+    const day = m.dateEvent || 'TBD';
+    if (!groups[day]) groups[day] = [];
+    groups[day].push(m);
+  }
+
+  const today    = new Date().toISOString().slice(0, 10);
+  const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+
   let h = '';
-  if (live.length) h += `<div class="slabel"><span class="dot"></span>Live now</div>`    + live.map(matchCard).join('');
-  if (soon.length) h += `<div class="slabel">Upcoming</div>`                             + soon.map(matchCard).join('');
-  if (done.length) h += `<div class="slabel">Full time</div>`                            + done.map(matchCard).join('');
+  for (const day of Object.keys(groups).sort()) {
+    let label;
+    if (day === today)    label = 'Today';
+    else if (day === tomorrow) label = 'Tomorrow';
+    else label = new Date(day + 'T12:00:00Z').toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
+
+    // Check if any match in this day is live
+    const hasLive = groups[day].some(m => statusOf(m) === 'live');
+    h += `<div class="day-label">${hasLive ? '<span class="dot"></span>' : ''}${label}</div>`;
+    h += groups[day].map(matchCard).join('');
+  }
   el('main').innerHTML = h;
+}
+
 }
 
 /* ── Squad ── */
 async function openMatch(i) {
-  S.match = S.all[i]; S.view = 'squad'; S.player = null; S.tab = S.match.idHomeTeam;
+  S.match = S.matches[i]; S.view = 'squad'; S.player = null; S.tab = S.match.idHomeTeam;
   renderBc();
   el('main').innerHTML = `<div class="loading"><div class="spinner"></div>Loading squads…</div>`;
   try {
@@ -571,24 +576,53 @@ function render() {
 async function loadMatches() {
   const btn = el('refreshBtn');
   btn.disabled = true; btn.textContent = '↻ Loading…';
-  el('main').innerHTML = `<div class="loading"><div class="spinner"></div>Fetching live scores…</div>`;
+  el('main').innerHTML = `<div class="loading"><div class="spinner"></div>Fetching World Cup schedule…</div>`;
 
   try {
-    const data = await getLivescores();
-    const all  = data.livescore || data.events || [];
-    S.all = Array.isArray(all) ? all : [];
-    S.wc  = S.all.filter(m => m.idLeague === WC_ID);
-    S.filter = S.wc.length ? 'wc' : 'all';
+    // Fetch live scores and full season schedule in parallel
+    const [liveData, scheduleData] = await Promise.allSettled([
+      getLivescores(),
+      getSchedule(),
+    ]);
+
+    // Live matches (WC only)
+    const liveMatches = liveData.status === 'fulfilled'
+      ? (liveData.value.livescore || []).filter(m => m.idLeague === WC_ID)
+      : [];
+
+    // Season schedule — filter to next 7 days + today
+    const today   = new Date(); today.setHours(0,0,0,0);
+    const weekEnd = new Date(today.getTime() + 7 * 86400000);
+
+    const scheduleMatches = scheduleData.status === 'fulfilled'
+      ? (scheduleData.value.events || []).filter(m => {
+          if (!m.dateEvent) return false;
+          const d = new Date(m.dateEvent + 'T00:00:00');
+          return d >= today && d <= weekEnd;
+        })
+      : [];
+
+    // Merge: live data is authoritative for today's matches (has live score + status)
+    // Use a map keyed by idEvent so live matches overwrite schedule entries
+    const merged = new Map();
+    for (const m of scheduleMatches) merged.set(m.idEvent, m);
+    for (const m of liveMatches)    merged.set(m.idEvent, m); // live overwrites
+
+    S.matches = [...merged.values()].sort((a, b) => {
+      const da = new Date((a.strTimestamp || a.dateEvent + 'T00:00:00'));
+      const db = new Date((b.strTimestamp || b.dateEvent + 'T00:00:00'));
+      return da - db;
+    });
+
     S.view = 'matches'; S.match = null; S.player = null; S.tab = null;
     el('updated').textContent =
-      'Updated ' + new Date().toLocaleTimeString(undefined, { hour:'2-digit', minute:'2-digit' });
+      'Updated ' + new Date().toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
     render();
-  } catch(e) {
+  } catch (e) {
     el('main').innerHTML = `<div class="err">
-      <strong>Could not load scores.</strong><br><br>
+      <strong>Could not load matches.</strong><br><br>
       ${esc(e.message)}<br><br>
-      If you're running this locally (not on Netlify), open <code>index.html</code> via
-      <code>netlify dev</code> so the proxy function is available.
+      If running locally, use <code>netlify dev</code> so the proxy function is available.
     </div>`;
   }
 
