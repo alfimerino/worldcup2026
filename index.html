@@ -106,6 +106,19 @@ button:disabled { opacity: 0.45; cursor: wait; }
 .sb-info { font-size: 12px; color: var(--chalk-faint); margin-top: 8px; letter-spacing: 0.06em; }
 .sb-info.live { color: var(--live); }
 
+/* Match timeline (goals & cards) */
+.timeline {
+  background: var(--card); border: 1px solid var(--line); border-radius: var(--r);
+  padding: 14px 16px; margin-bottom: 16px;
+}
+.tl-title { font-size: 10px; font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase; color: var(--chalk-faint); margin-bottom: 10px; }
+.tl-item { display: flex; align-items: center; gap: 10px; padding: 5px 0; font-size: 13px; }
+.tl-min { font-family: var(--mono); font-size: 12px; font-weight: 700; color: var(--gold); min-width: 34px; text-align: right; }
+.tl-icon { font-size: 14px; width: 20px; text-align: center; flex-shrink: 0; }
+.tl-player { font-weight: 600; }
+.tl-team { font-size: 11px; color: var(--chalk-faint); }
+.tl-empty { font-size: 12px; color: var(--chalk-faint); font-style: italic; }
+
 /* Team tabs */
 .team-tabs { display: flex; gap: 8px; margin-bottom: 16px; }
 .ttab {
@@ -228,9 +241,10 @@ const PROXY  = '/.netlify/functions/scores';
 
 let S = {
   view: 'matches',
-  matches: [],       // all WC matches for the week (live + scheduled)
+  matches: [],       // all WC matches (recent results + live + upcoming week)
   squads: {},
   clubCache: {},
+  timeline: null,    // goals/cards for the open match
   match: null, tab: null, player: null
 };
 
@@ -250,10 +264,16 @@ async function proxyGet(endpoint, params = {}) {
 }
 
 async function getLivescores() {
-  return proxyGet('livescore/soccer');                                      // v2 — today only
+  return proxyGet('livescore/soccer');                              // v2 — live now
 }
-async function getSchedule() {
-  return proxyGet('eventsseason.php', { id: WC_ID, s: '2026' });           // v1 — full season
+async function getUpcoming() {
+  return proxyGet('eventsnextleague.php', { id: WC_ID });           // v1 — next ~25 fixtures
+}
+async function getRecent() {
+  return proxyGet('eventspastleague.php', { id: WC_ID });           // v1 — last ~15 results
+}
+async function getTimeline(eventId) {
+  return proxyGet('lookuptimeline.php', { id: eventId });           // v1 — goals/cards timeline
 }
 async function getSquad(teamId) {
   return proxyGet('lookup_all_players.php', { id: teamId });
@@ -278,14 +298,11 @@ async function getClubInfo(idTeam, fallbackName) {
   try {
     const d    = await lookupTeam(idTeam);
     const team = d.teams?.[0];
-    // Log what comes back so we can see the badge field name
-    if (team) console.log('TEAM FIELDS for', idTeam, ':', Object.keys(team).filter(k => k.toLowerCase().includes('badge') || k.toLowerCase().includes('logo') || k.toLowerCase().includes('thumb')), '→', team.strTeamBadge || team.strBadge || team.strLogo || '(none)');
     const badge = team?.strTeamBadge || team?.strBadge || team?.strLogo || null;
     const info  = { badge, name: team?.strTeam || fallbackName || '' };
     S.clubCache[cacheKey] = info;
     return info;
   } catch(e) {
-    console.warn('getClubInfo failed for idTeam', idTeam, e.message);
     const info = { badge: null, name: fallbackName || '' };
     S.clubCache[cacheKey] = info;
     return info;
@@ -411,16 +428,23 @@ function renderMatches() {
 /* ── Squad ── */
 async function openMatch(i) {
   S.match = S.matches[i]; S.view = 'squad'; S.player = null; S.tab = S.match.idHomeTeam;
+  S.timeline = null;
   renderBc();
-  el('main').innerHTML = `<div class="loading"><div class="spinner"></div>Loading squads…</div>`;
+  el('main').innerHTML = `<div class="loading"><div class="spinner"></div>Loading match…</div>`;
   try {
     const hId = S.match.idHomeTeam, aId = S.match.idAwayTeam;
-    if (!S.squads[hId]) { const d = await getSquad(hId); S.squads[hId] = d.player || []; }
-    if (!S.squads[aId]) { const d = await getSquad(aId); S.squads[aId] = d.player || []; }
+    const started = statusOf(S.match) !== 'ns';
 
-    // Log first player so we can see all available fields in browser console
-    const firstPlayer = (S.squads[hId] || [])[0];
-    if (firstPlayer) console.log('PLAYER FIELDS:', JSON.stringify(firstPlayer, null, 2));
+    // Squads + timeline in parallel
+    const jobs = [];
+    if (!S.squads[hId]) jobs.push(getSquad(hId).then(d => { S.squads[hId] = d.player || []; }));
+    if (!S.squads[aId]) jobs.push(getSquad(aId).then(d => { S.squads[aId] = d.player || []; }));
+    if (started && S.match.idEvent) {
+      jobs.push(getTimeline(S.match.idEvent)
+        .then(d => { S.timeline = d.timeline || []; })
+        .catch(() => { S.timeline = null; }));
+    }
+    await Promise.allSettled(jobs);
 
     // Pre-fetch club badges for all players using idTeam (direct lookup, reliable)
     const allPlayers = [...(S.squads[hId] || []), ...(S.squads[aId] || [])];
@@ -434,6 +458,44 @@ async function openMatch(i) {
   } catch(e) {
     el('main').innerHTML = `<div class="err">Couldn't load squads: ${esc(e.message)}</div>`;
   }
+}
+
+// Builds the goals & cards timeline HTML (empty string if nothing to show)
+function renderTimeline() {
+  if (!S.timeline || !S.timeline.length) return '';
+
+  const icons = {
+    'Goal':        '⚽',
+    'Yellow Card': '🟨',
+    'Red Card':    '🟥',
+  };
+
+  const items = S.timeline
+    .filter(t => {
+      const type   = t.strTimeline || '';
+      const detail = t.strTimelineDetail || '';
+      return type === 'Goal' || type === 'Card' ||
+             detail.includes('Goal') || detail.includes('Card');
+    })
+    .sort((a, b) => (parseInt(a.intTime) || 0) - (parseInt(b.intTime) || 0));
+
+  if (!items.length) return '';
+
+  const rows = items.map(t => {
+    const detail = t.strTimelineDetail || t.strTimeline || '';
+    let icon = '•';
+    if (detail.includes('Goal') || t.strTimeline === 'Goal') icon = icons['Goal'];
+    if (detail.includes('Yellow')) icon = icons['Yellow Card'];
+    if (detail.includes('Red'))    icon = icons['Red Card'];
+    return `<div class="tl-item">
+      <span class="tl-min">${esc(t.intTime || '')}'</span>
+      <span class="tl-icon">${icon}</span>
+      <span class="tl-player">${esc(t.strPlayer || 'Unknown')}</span>
+      <span class="tl-team">${esc(t.strTeam || '')}</span>
+    </div>`;
+  }).join('');
+
+  return `<div class="timeline"><div class="tl-title">Match events</div>${rows}</div>`;
 }
 
 function renderSquad() {
@@ -458,6 +520,7 @@ function renderSquad() {
     </div>
     <div class="sb-info ${st==='live'?'live':''}">${esc(statusLabel(m))} · ${fmtDate(m.dateEvent)}</div>
   </div>
+  ${renderTimeline()}
   <div class="team-tabs">
     <button class="ttab ${tab===m.idHomeTeam?'active':''}" onclick="S.tab='${m.idHomeTeam}';render()">
       ${m.strHomeTeamBadge?`<img src="${esc(m.strHomeTeamBadge)}" alt="" onerror="this.remove()">`:''} ${esc(m.strHomeTeam)}
@@ -574,41 +637,43 @@ function render() {
 async function loadMatches() {
   const btn = el('refreshBtn');
   btn.disabled = true; btn.textContent = '↻ Loading…';
-  el('main').innerHTML = `<div class="loading"><div class="spinner"></div>Fetching World Cup schedule…</div>`;
+  el('main').innerHTML = `<div class="loading"><div class="spinner"></div>Fetching World Cup matches…</div>`;
 
   try {
-    // Fetch live scores and full season schedule in parallel
-    const [liveData, scheduleData] = await Promise.allSettled([
-      getLivescores(),
-      getSchedule(),
+    // Three sources in parallel — none require a season string:
+    //   live:     real-time scores (v2 livescore)
+    //   upcoming: next ~25 scheduled fixtures
+    //   recent:   last ~15 finished results
+    const [liveR, upR, pastR] = await Promise.allSettled([
+      getLivescores(), getUpcoming(), getRecent(),
     ]);
 
-    // Live matches (WC only)
-    const liveMatches = liveData.status === 'fulfilled'
-      ? (liveData.value.livescore || []).filter(m => m.idLeague === WC_ID)
-      : [];
+    const live = liveR.status === 'fulfilled'
+      ? (liveR.value.livescore || []).filter(m => m.idLeague === WC_ID) : [];
+    const upcoming = upR.status === 'fulfilled'
+      ? (upR.value.events || upR.value.results || []) : [];
+    const recent = pastR.status === 'fulfilled'
+      ? (pastR.value.events || pastR.value.results || []) : [];
 
-    // Season schedule — filter to next 7 days + today
-    const today   = new Date(); today.setHours(0,0,0,0);
-    const weekEnd = new Date(today.getTime() + 7 * 86400000);
+    // Keep only matches within a window: past 3 days → next 7 days
+    const now      = new Date(); now.setHours(0,0,0,0);
+    const windowLo = new Date(now.getTime() - 3 * 86400000);
+    const windowHi = new Date(now.getTime() + 7 * 86400000);
+    const inWindow = m => {
+      if (!m.dateEvent) return false;
+      const d = new Date(m.dateEvent + 'T00:00:00');
+      return d >= windowLo && d <= windowHi;
+    };
 
-    const scheduleMatches = scheduleData.status === 'fulfilled'
-      ? (scheduleData.value.events || []).filter(m => {
-          if (!m.dateEvent) return false;
-          const d = new Date(m.dateEvent + 'T00:00:00');
-          return d >= today && d <= weekEnd;
-        })
-      : [];
-
-    // Merge: live data is authoritative for today's matches (has live score + status)
-    // Use a map keyed by idEvent so live matches overwrite schedule entries
+    // Merge by idEvent — priority: schedule/results first, then live overwrites
     const merged = new Map();
-    for (const m of scheduleMatches) merged.set(m.idEvent, m);
-    for (const m of liveMatches)    merged.set(m.idEvent, m); // live overwrites
+    for (const m of recent.filter(inWindow))   merged.set(m.idEvent, m);
+    for (const m of upcoming.filter(inWindow)) merged.set(m.idEvent, m);
+    for (const m of live)                      merged.set(m.idEvent, m);
 
     S.matches = [...merged.values()].sort((a, b) => {
-      const da = new Date((a.strTimestamp || a.dateEvent + 'T00:00:00'));
-      const db = new Date((b.strTimestamp || b.dateEvent + 'T00:00:00'));
+      const da = new Date(a.strTimestamp || (a.dateEvent + 'T' + (a.strTime || '00:00:00')));
+      const db = new Date(b.strTimestamp || (b.dateEvent + 'T' + (b.strTime || '00:00:00')));
       return da - db;
     });
 
