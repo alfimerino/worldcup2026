@@ -153,6 +153,7 @@ button:disabled { opacity: 0.45; cursor: wait; }
   color: var(--chalk-dim); margin: 18px 0 10px; display: flex; align-items: center; gap: 8px;
 }
 .dot-pitch { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex-shrink: 0; }
+.lineup-note { font-size: 12px; color: var(--chalk-faint); font-style: italic; margin: 4px 0 14px; padding: 10px 12px; border: 1px dashed var(--line); border-radius: 10px; }
 
 /* Player detail */
 .pcard { background: var(--card); border: 1px solid var(--line); border-radius: var(--r); padding: 22px; }
@@ -644,6 +645,10 @@ function renderSquad() {
         h += subs.map(playerRow).join('');
       }
     } else {
+      const reason = statusOf(m) === 'ns'
+        ? 'Lineups are announced about an hour before kickoff.'
+        : 'No lineup published for this match yet — showing the full squad.';
+      h += `<div class="lineup-note">${reason}</div>`;
       h += starters.map(playerRow).join('');
     }
   }
