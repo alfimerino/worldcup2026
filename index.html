@@ -148,6 +148,11 @@ button:disabled { opacity: 0.45; cursor: wait; }
 .p-birth { font-size: 11px; color: var(--chalk-faint); display: flex; align-items: center; gap: 5px; }
 .p-birth .pin { font-size: 10px; opacity: 0.7; }
 .p-pos { font-size: 11px; color: var(--chalk-faint); text-transform: uppercase; letter-spacing: 0.08em; flex-shrink: 0; }
+.squad-section {
+  font-size: 11px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--chalk-dim); margin: 18px 0 10px; display: flex; align-items: center; gap: 8px;
+}
+.dot-pitch { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex-shrink: 0; }
 
 /* Player detail */
 .pcard { background: var(--card); border: 1px solid var(--line); border-radius: var(--r); padding: 22px; }
@@ -247,6 +252,7 @@ let S = {
   squads: {},
   clubCache: {},
   timeline: null,    // goals/cards for the open match
+  lineup: null,      // starters/subs for the open match (both teams)
   match: null, tab: null, player: null
 };
 
@@ -276,6 +282,9 @@ async function getRecent() {
 }
 async function getTimeline(eventId) {
   return proxyGet('lookuptimeline.php', { id: eventId });           // v1 — goals/cards timeline
+}
+async function getLineup(eventId) {
+  return proxyGet('lookuplineup.php', { id: eventId });            // v1 — starters/subs + positions
 }
 async function getSquad(teamId) {
   return proxyGet('lookup_all_players.php', { id: teamId });
@@ -431,13 +440,14 @@ function renderMatches() {
 async function openMatch(i) {
   S.match = S.matches[i]; S.view = 'squad'; S.player = null; S.tab = S.match.idHomeTeam;
   S.timeline = null;
+  S.lineup = null;
   renderBc();
   el('main').innerHTML = `<div class="loading"><div class="spinner"></div>Loading match…</div>`;
   try {
     const hId = S.match.idHomeTeam, aId = S.match.idAwayTeam;
     const started = statusOf(S.match) !== 'ns';
 
-    // Squads + timeline in parallel
+    // Squads + timeline + lineup in parallel
     const jobs = [];
     if (!S.squads[hId]) jobs.push(getSquad(hId).then(d => { S.squads[hId] = d.player || []; }));
     if (!S.squads[aId]) jobs.push(getSquad(aId).then(d => { S.squads[aId] = d.player || []; }));
@@ -445,6 +455,9 @@ async function openMatch(i) {
       jobs.push(getTimeline(S.match.idEvent)
         .then(d => { S.timeline = d.timeline || []; })
         .catch(() => { S.timeline = null; }));
+      jobs.push(getLineup(S.match.idEvent)
+        .then(d => { S.lineup = d.lineup || null; })
+        .catch(() => { S.lineup = null; }));
     }
     await Promise.allSettled(jobs);
 
@@ -500,6 +513,93 @@ function renderTimeline() {
   return `<div class="timeline"><div class="tl-title">Match events</div>${rows}</div>`;
 }
 
+// Rank a position into GK(0) → DEF(1) → MID(2) → FWD(3) → other(4).
+// Midfield is checked before defense/forward so "Defensive Midfield" and
+// "Attacking Midfield" both rank as midfield.
+function posRank(pos) {
+  const p = (pos || '').toLowerCase();
+  if (!p) return 4;
+  if (p.includes('keeper') || p === 'gk') return 0;
+  if (p.includes('midfield')) return 2;
+  if (p.includes('back') || p.includes('defen')) return 1;
+  if (p.includes('forward') || p.includes('winger') || p.includes('striker') || p.includes('attack')) return 3;
+  return 4;
+}
+const byPos = (a, b) => {
+  const r = posRank(a.strPosition) - posRank(b.strPosition);
+  if (r !== 0) return r;
+  return (parseInt(a.strNumber) || 99) - (parseInt(b.strNumber) || 99);
+};
+
+// Builds { starters, subs, hasLineup } for one team tab.
+// Uses lineup data (starter/sub split) when available, merging in squad data
+// for club badges & birthplace; otherwise falls back to the full squad.
+function buildRoster(tab, m) {
+  const squad = S.squads[tab] || [];
+  const squadById = {};
+  squad.forEach(p => { if (p.idPlayer) squadById[p.idPlayer] = p; });
+
+  const isHome = tab === m.idHomeTeam;
+  const teamLineup = (S.lineup || []).filter(l =>
+    (l.idTeam && l.idTeam === tab) ||
+    (!l.idTeam && l.strHome === (isHome ? 'Yes' : 'No'))
+  );
+
+  if (teamLineup.length) {
+    const enrich = l => {
+      const sq = squadById[l.idPlayer] || {};
+      return {
+        idPlayer:         l.idPlayer || sq.idPlayer,
+        strPlayer:        l.strPlayer || sq.strPlayer,
+        strNumber:        l.intSquadNumber || sq.strNumber,
+        strPosition:      l.strPosition || sq.strPosition,
+        // club + birth come from the squad record (lineup's idTeam is the national team)
+        strTeam:          sq.strTeam,
+        strClub:          sq.strClub,
+        idTeam:           sq.idTeam,
+        strBirthLocation: sq.strBirthLocation,
+        strNationality:   sq.strNationality,
+        isSub:            l.strSubstitute === 'Yes',
+      };
+    };
+    const all      = teamLineup.map(enrich);
+    const starters = all.filter(p => !p.isSub).sort(byPos);
+    const subs     = all.filter(p => p.isSub).sort(byPos);
+    return { starters, subs, hasLineup: true };
+  }
+
+  // No lineup published — show full squad, position-sorted
+  return { starters: squad.slice().sort(byPos), subs: [], hasLineup: false };
+}
+
+// Renders one player list row
+function playerRow(p) {
+  const clubName = p.strTeam || p.strClub || '';
+  const cacheKey = p.idTeam || ('name:' + clubName);
+  const clubInfo = S.clubCache[cacheKey] || { badge: null, name: clubName };
+  const clubRow  = clubName
+    ? `<div class="p-club-row">
+         ${clubInfo.badge ? `<img class="p-club-badge" src="${esc(clubInfo.badge)}" alt="" onerror="this.remove()">` : ''}
+         <span class="p-club-name">${esc(clubInfo.name || clubName)}</span>
+       </div>`
+    : '';
+  const birthplace = p.strBirthLocation || p.strNationality || '';
+  const birthRow = birthplace
+    ? `<div class="p-birth"><span class="pin">📍</span>${esc(birthplace)}</div>`
+    : '';
+  return `
+  <div class="player" onclick="openPlayer('${esc(p.idPlayer)}')" role="button" tabindex="0"
+       onkeydown="if(event.key==='Enter')openPlayer('${esc(p.idPlayer)}')">
+    <span class="p-num">${esc(p.strNumber || '·')}</span>
+    <div class="p-info">
+      <span class="p-name">${esc(p.strPlayer)}</span>
+      ${clubRow}
+      ${birthRow}
+    </div>
+    <span class="p-pos">${esc(p.strPosition || '')}</span>
+  </div>`;
+}
+
 function renderSquad() {
   const m   = S.match, tab = S.tab || m.idHomeTeam;
   const squad = (S.squads[tab] || [])
@@ -535,32 +635,17 @@ function renderSquad() {
   if (!squad.length) {
     h += `<div class="empty">No squad data in TheSportsDB for this team yet.</div>`;
   } else {
-    h += squad.map(p => {
-      const clubName = p.strTeam || p.strClub || '';
-      const cacheKey = p.idTeam || ('name:' + clubName);
-      const clubInfo = S.clubCache[cacheKey] || { badge: null, name: clubName };
-      const clubRow  = clubName
-        ? `<div class="p-club-row">
-             ${clubInfo.badge ? `<img class="p-club-badge" src="${esc(clubInfo.badge)}" alt="" onerror="this.remove()">` : ''}
-             <span class="p-club-name">${esc(clubInfo.name || clubName)}</span>
-           </div>`
-        : '';
-      const birthplace = p.strBirthLocation || p.strNationality || '';
-      const birthRow = birthplace
-        ? `<div class="p-birth"><span class="pin">📍</span>${esc(birthplace)}</div>`
-        : '';
-      return `
-      <div class="player" onclick="openPlayer('${esc(p.idPlayer)}')" role="button" tabindex="0"
-           onkeydown="if(event.key==='Enter')openPlayer('${esc(p.idPlayer)}')">
-        <span class="p-num">${esc(p.strNumber || '·')}</span>
-        <div class="p-info">
-          <span class="p-name">${esc(p.strPlayer)}</span>
-          ${clubRow}
-          ${birthRow}
-        </div>
-        <span class="p-pos">${esc(p.strPosition || '')}</span>
-      </div>`;
-    }).join('');
+    const { starters, subs, hasLineup } = buildRoster(tab, m);
+    if (hasLineup) {
+      h += `<div class="squad-section"><span class="dot-pitch"></span>On the pitch · ${starters.length}</div>`;
+      h += starters.map(playerRow).join('');
+      if (subs.length) {
+        h += `<div class="squad-section">Substitutes · ${subs.length}</div>`;
+        h += subs.map(playerRow).join('');
+      }
+    } else {
+      h += starters.map(playerRow).join('');
+    }
   }
   el('main').innerHTML = h;
 }
