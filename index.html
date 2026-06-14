@@ -145,6 +145,8 @@ button:disabled { opacity: 0.45; cursor: wait; }
 .p-club-row { display: flex; align-items: center; gap: 6px; }
 .p-club-badge { width: 16px; height: 16px; object-fit: contain; flex-shrink: 0; }
 .p-club-name { font-size: 11px; color: var(--chalk-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.p-birth { font-size: 11px; color: var(--chalk-faint); display: flex; align-items: center; gap: 5px; }
+.p-birth .pin { font-size: 10px; opacity: 0.7; }
 .p-pos { font-size: 11px; color: var(--chalk-faint); text-transform: uppercase; letter-spacing: 0.08em; flex-shrink: 0; }
 
 /* Player detail */
@@ -543,6 +545,10 @@ function renderSquad() {
              <span class="p-club-name">${esc(clubInfo.name || clubName)}</span>
            </div>`
         : '';
+      const birthplace = p.strBirthLocation || p.strNationality || '';
+      const birthRow = birthplace
+        ? `<div class="p-birth"><span class="pin">📍</span>${esc(birthplace)}</div>`
+        : '';
       return `
       <div class="player" onclick="openPlayer('${esc(p.idPlayer)}')" role="button" tabindex="0"
            onkeydown="if(event.key==='Enter')openPlayer('${esc(p.idPlayer)}')">
@@ -550,6 +556,7 @@ function renderSquad() {
         <div class="p-info">
           <span class="p-name">${esc(p.strPlayer)}</span>
           ${clubRow}
+          ${birthRow}
         </div>
         <span class="p-pos">${esc(p.strPosition || '')}</span>
       </div>`;
