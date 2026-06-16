@@ -149,10 +149,10 @@ button:disabled { opacity: 0.45; cursor: wait; }
 .p-birth .pin { font-size: 10px; opacity: 0.7; }
 .p-pos { font-size: 11px; color: var(--chalk-faint); text-transform: uppercase; letter-spacing: 0.08em; flex-shrink: 0; }
 .squad-section {
-  font-size: 11px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase;
-  color: var(--chalk-dim); margin: 18px 0 10px; display: flex; align-items: center; gap: 8px;
+  font-size: 16px; font-weight: 700; letter-spacing: 0.04em;
+  color: var(--chalk); margin: 24px 0 12px; display: flex; align-items: center; gap: 9px;
 }
-.dot-pitch { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex-shrink: 0; }
+.dot-pitch { width: 9px; height: 9px; border-radius: 50%; background: var(--accent); flex-shrink: 0; }
 .lineup-note { font-size: 12px; color: var(--chalk-faint); font-style: italic; margin: 4px 0 14px; padding: 10px 12px; border: 1px dashed var(--line); border-radius: 10px; }
 .debug-box { margin: 0 0 14px; border: 1px solid var(--gold); border-radius: 10px; padding: 10px 12px; background: rgba(232,181,66,0.06); }
 .debug-box summary { font-size: 12px; color: var(--gold); cursor: pointer; font-weight: 600; }
@@ -584,7 +584,28 @@ function buildRoster(tab, m) {
     };
     const all      = teamLineup.map(enrich);
     const starters = all.filter(p => !p.isSub).sort(byPos);
-    const subs     = all.filter(p => p.isSub).sort(byPos);
+    const namedSubs = all.filter(p => p.isSub);
+
+    // Add the rest of the national squad — players not in the published lineup at all —
+    // as additional bench options below the named substitutes.
+    const inLineup = new Set(all.map(p => p.idPlayer));
+    const restOfSquad = squad
+      .filter(p => p.idPlayer && !inLineup.has(p.idPlayer))
+      .map(p => ({
+        idPlayer:         p.idPlayer,
+        strPlayer:        p.strPlayer,
+        strNumber:        p.strNumber,
+        strPosition:      p.strPosition,
+        idTeam:           p.idTeam,
+        strTeam:          p.strTeam,
+        strClub:          p.strClub,
+        strThumb:         p.strThumb,
+        strBirthLocation: p.strBirthLocation,
+        strNationality:   p.strNationality,
+        isSub:            true,
+      }));
+
+    const subs = [...namedSubs, ...restOfSquad].sort(byPos);
     return { starters, subs, hasLineup: true };
   }
 
