@@ -469,10 +469,16 @@ async function openMatch(i) {
     }
     await Promise.allSettled(jobs);
 
-    // Pre-fetch club badges for all players using idTeam (direct lookup, reliable)
-    const allPlayers = [...(S.squads[hId] || []), ...(S.squads[aId] || [])];
+    // Pre-fetch club badges. Sources: squad players AND lineup rows
+    // (lineup idTeam/strTeam is the player's club, often more current than squad).
+    const allPlayers = [
+      ...(S.squads[hId] || []),
+      ...(S.squads[aId] || []),
+      ...((S.lineup || []).map(l => ({ idTeam: l.idTeam, strTeam: l.strTeam }))),
+    ];
     const seen = new Set();
     const clubFetches = allPlayers
+      .filter(p => p.idTeam || p.strTeam || p.strClub)
       .filter(p => { const k = p.idTeam || ('name:' + (p.strTeam||p.strClub)); if (seen.has(k)) return false; seen.add(k); return true; })
       .map(p => getClubInfo(p.idTeam, p.strTeam || p.strClub));
     await Promise.allSettled(clubFetches);
@@ -540,26 +546,23 @@ const byPos = (a, b) => {
 };
 
 // Builds { starters, subs, hasLineup } for one team tab.
-// Uses lineup data (starter/sub split) when available, merging in squad data
-// for club badges & birthplace; otherwise falls back to the full squad.
+// IMPORTANT: in the v2 lineup feed, each row's idTeam/strTeam is the player's
+// CLUB, not the national team — so teams are split by strHome ("Yes"/"No").
 function buildRoster(tab, m) {
   const squad = S.squads[tab] || [];
   const squadById = {};
   squad.forEach(p => { if (p.idPlayer) squadById[p.idPlayer] = p; });
 
   const isHome = tab === m.idHomeTeam;
-  const lineupTeamId = l => l.idTeam || l.idTeamLineup || null;
+  const wantHome = isHome ? 'Yes' : 'No';
+
   const isSubstitute = l => {
     const v = l.strSubstitute ?? l.strSub ?? l.intSubstitute;
     return v === 'Yes' || v === 'yes' || v === '1' || v === 1 || v === true;
   };
-  const homeFlag = l => l.strHome ?? l.strSide;
 
-  const teamLineup = (S.lineup || []).filter(l => {
-    const tid = lineupTeamId(l);
-    if (tid) return String(tid) === String(tab);
-    return homeFlag(l) === (isHome ? 'Yes' : 'No');
-  });
+  // Split by home/away side (the reliable field), not by idTeam (which is the club)
+  const teamLineup = (S.lineup || []).filter(l => (l.strHome ?? l.strSide) === wantHome);
 
   if (teamLineup.length) {
     const enrich = l => {
@@ -569,12 +572,13 @@ function buildRoster(tab, m) {
         strPlayer:        l.strPlayer || sq.strPlayer,
         strNumber:        l.intSquadNumber || l.strNumber || sq.strNumber,
         strPosition:      l.strPosition || sq.strPosition,
-        // club + birth come from the squad record (lineup's idTeam is the national team)
-        strTeam:          sq.strTeam,
+        // lineup feed already carries the player's club in idTeam/strTeam
+        idTeam:           l.idTeam || sq.idTeam,
+        strTeam:          l.strTeam || sq.strTeam,
         strClub:          sq.strClub,
-        idTeam:           sq.idTeam,
+        strThumb:         l.strCutout || sq.strThumb,
         strBirthLocation: sq.strBirthLocation,
-        strNationality:   sq.strNationality,
+        strNationality:   l.strCountry || sq.strNationality,
         isSub:            isSubstitute(l),
       };
     };
@@ -618,10 +622,7 @@ function playerRow(p) {
 
 function renderSquad() {
   const m   = S.match, tab = S.tab || m.idHomeTeam;
-  const squad = (S.squads[tab] || [])
-    .slice().sort((a,b) => (parseInt(a.strNumber)||99) - (parseInt(b.strNumber)||99));
   const st  = statusOf(m);
-  const tbadge = tab === m.idHomeTeam ? m.strHomeTeamBadge : m.strAwayTeamBadge;
 
   let h = `
   <div class="scoreboard">
@@ -648,30 +649,23 @@ function renderSquad() {
     </button>
   </div>`;
 
-  if (!squad.length) {
-    h += `<div class="empty">No squad data in TheSportsDB for this team yet.</div>`;
-  } else {
-    const { starters, subs, hasLineup } = buildRoster(tab, m);
-    if (hasLineup) {
-      h += `<div class="squad-section"><span class="dot-pitch"></span>On the pitch · ${starters.length}</div>`;
-      h += starters.map(playerRow).join('');
-      if (subs.length) {
-        h += `<div class="squad-section">Substitutes · ${subs.length}</div>`;
-        h += subs.map(playerRow).join('');
-      }
-    } else {
-      const reason = statusOf(m) === 'ns'
-        ? 'Lineups are announced about an hour before kickoff.'
-        : 'No lineup published for this match yet — showing the full squad.';
-      h += `<div class="lineup-note">${reason}</div>`;
-      // TEMPORARY DEBUG: show what the lineup endpoint actually returned
-      if (S.lineupRaw) {
-        const dump = JSON.stringify(S.lineupRaw, null, 2);
-        const preview = dump.length > 2000 ? dump.slice(0, 2000) + '\n…(truncated)' : dump;
-        h += `<details class="debug-box"><summary>🔧 Debug: raw lineup response (event ${esc(m.idEvent)})</summary><pre>${esc(preview)}</pre></details>`;
-      }
-      h += starters.map(playerRow).join('');
+  const { starters, subs, hasLineup } = buildRoster(tab, m);
+
+  if (!starters.length && !subs.length) {
+    h += `<div class="empty">No squad or lineup data in TheSportsDB for this team yet.</div>`;
+  } else if (hasLineup) {
+    h += `<div class="squad-section"><span class="dot-pitch"></span>On the pitch · ${starters.length}</div>`;
+    h += starters.map(playerRow).join('');
+    if (subs.length) {
+      h += `<div class="squad-section">Substitutes · ${subs.length}</div>`;
+      h += subs.map(playerRow).join('');
     }
+  } else {
+    const reason = statusOf(m) === 'ns'
+      ? 'Lineups are announced about an hour before kickoff.'
+      : 'No lineup published for this match yet — showing the full squad.';
+    h += `<div class="lineup-note">${reason}</div>`;
+    h += starters.map(playerRow).join('');
   }
   el('main').innerHTML = h;
 }
