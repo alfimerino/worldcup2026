@@ -154,6 +154,9 @@ button:disabled { opacity: 0.45; cursor: wait; }
 }
 .dot-pitch { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex-shrink: 0; }
 .lineup-note { font-size: 12px; color: var(--chalk-faint); font-style: italic; margin: 4px 0 14px; padding: 10px 12px; border: 1px dashed var(--line); border-radius: 10px; }
+.debug-box { margin: 0 0 14px; border: 1px solid var(--gold); border-radius: 10px; padding: 10px 12px; background: rgba(232,181,66,0.06); }
+.debug-box summary { font-size: 12px; color: var(--gold); cursor: pointer; font-weight: 600; }
+.debug-box pre { margin-top: 10px; font-family: var(--mono); font-size: 11px; color: var(--chalk-dim); white-space: pre-wrap; word-break: break-all; max-height: 360px; overflow: auto; }
 
 /* Player detail */
 .pcard { background: var(--card); border: 1px solid var(--line); border-radius: var(--r); padding: 22px; }
@@ -442,6 +445,7 @@ async function openMatch(i) {
   S.match = S.matches[i]; S.view = 'squad'; S.player = null; S.tab = S.match.idHomeTeam;
   S.timeline = null;
   S.lineup = null;
+  S.lineupRaw = null;
   renderBc();
   el('main').innerHTML = `<div class="loading"><div class="spinner"></div>Loading match…</div>`;
   try {
@@ -457,8 +461,11 @@ async function openMatch(i) {
         .then(d => { S.timeline = d.timeline || []; })
         .catch(() => { S.timeline = null; }));
       jobs.push(getLineup(S.match.idEvent)
-        .then(d => { S.lineup = d.lineup || d.lookup || d.results || null; })
-        .catch(() => { S.lineup = null; }));
+        .then(d => {
+          S.lineupRaw = d;                                   // keep raw for debug
+          S.lineup = d.lineup || d.lookup || d.results || d.lineups || null;
+        })
+        .catch(e => { S.lineup = null; S.lineupRaw = { error: e.message }; }));
     }
     await Promise.allSettled(jobs);
 
@@ -657,6 +664,12 @@ function renderSquad() {
         ? 'Lineups are announced about an hour before kickoff.'
         : 'No lineup published for this match yet — showing the full squad.';
       h += `<div class="lineup-note">${reason}</div>`;
+      // TEMPORARY DEBUG: show what the lineup endpoint actually returned
+      if (S.lineupRaw) {
+        const dump = JSON.stringify(S.lineupRaw, null, 2);
+        const preview = dump.length > 2000 ? dump.slice(0, 2000) + '\n…(truncated)' : dump;
+        h += `<details class="debug-box"><summary>🔧 Debug: raw lineup response (event ${esc(m.idEvent)})</summary><pre>${esc(preview)}</pre></details>`;
+      }
       h += starters.map(playerRow).join('');
     }
   }
