@@ -285,7 +285,7 @@ async function getTimeline(eventId) {
   return proxyGet('lookuptimeline.php', { id: eventId });           // v1 — goals/cards timeline
 }
 async function getLineup(eventId) {
-  return proxyGet('lookuplineup.php', { id: eventId });            // v1 — starters/subs + positions
+  return proxyGet(`lookup/event_lineup/${eventId}`);              // v2 — starters/subs + positions (live)
 }
 async function getSquad(teamId) {
   return proxyGet('lookup_all_players.php', { id: teamId });
@@ -457,7 +457,7 @@ async function openMatch(i) {
         .then(d => { S.timeline = d.timeline || []; })
         .catch(() => { S.timeline = null; }));
       jobs.push(getLineup(S.match.idEvent)
-        .then(d => { S.lineup = d.lineup || null; })
+        .then(d => { S.lineup = d.lineup || d.lookup || d.results || null; })
         .catch(() => { S.lineup = null; }));
     }
     await Promise.allSettled(jobs);
@@ -541,10 +541,18 @@ function buildRoster(tab, m) {
   squad.forEach(p => { if (p.idPlayer) squadById[p.idPlayer] = p; });
 
   const isHome = tab === m.idHomeTeam;
-  const teamLineup = (S.lineup || []).filter(l =>
-    (l.idTeam && l.idTeam === tab) ||
-    (!l.idTeam && l.strHome === (isHome ? 'Yes' : 'No'))
-  );
+  const lineupTeamId = l => l.idTeam || l.idTeamLineup || null;
+  const isSubstitute = l => {
+    const v = l.strSubstitute ?? l.strSub ?? l.intSubstitute;
+    return v === 'Yes' || v === 'yes' || v === '1' || v === 1 || v === true;
+  };
+  const homeFlag = l => l.strHome ?? l.strSide;
+
+  const teamLineup = (S.lineup || []).filter(l => {
+    const tid = lineupTeamId(l);
+    if (tid) return String(tid) === String(tab);
+    return homeFlag(l) === (isHome ? 'Yes' : 'No');
+  });
 
   if (teamLineup.length) {
     const enrich = l => {
@@ -552,7 +560,7 @@ function buildRoster(tab, m) {
       return {
         idPlayer:         l.idPlayer || sq.idPlayer,
         strPlayer:        l.strPlayer || sq.strPlayer,
-        strNumber:        l.intSquadNumber || sq.strNumber,
+        strNumber:        l.intSquadNumber || l.strNumber || sq.strNumber,
         strPosition:      l.strPosition || sq.strPosition,
         // club + birth come from the squad record (lineup's idTeam is the national team)
         strTeam:          sq.strTeam,
@@ -560,7 +568,7 @@ function buildRoster(tab, m) {
         idTeam:           sq.idTeam,
         strBirthLocation: sq.strBirthLocation,
         strNationality:   sq.strNationality,
-        isSub:            l.strSubstitute === 'Yes',
+        isSub:            isSubstitute(l),
       };
     };
     const all      = teamLineup.map(enrich);
